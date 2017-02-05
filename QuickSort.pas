@@ -12,7 +12,7 @@ begin
   b := temp;
 end;
 
-procedure quick_sort( low : integer ; high : integer ; var arr : vector );
+procedure quick_sort( low,high : integer ; var arr : vector );
 var
   lm,pivot,i : integer;
 begin
