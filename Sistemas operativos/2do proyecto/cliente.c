@@ -7,7 +7,6 @@
 #include <stdbool.h>
 #include <signal.h>
 #include "util.h"
-#include <time.h>
 
 bool conectado;
 char* pipe;
