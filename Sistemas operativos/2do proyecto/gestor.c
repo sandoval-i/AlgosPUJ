@@ -6,27 +6,12 @@
 #include <string.h>
 #include <stdbool.h>
 #include <signal.h>
-#include "util.h"
+#include "gestor.h"
 
-/* TODO: Tweet
+/*
    TODO: Recuperar tweets
 */
-
-/*struct tweet {
-  char* text;
-}*/
-
-bool asincrono;
-bool* connected;
-bool** adj_mat;
-int users;
-pid_t* pid_users;
-const char* PIPE_LECTURA = "cliente_gestor\0";
-const char* PIPE_ESCRITURA = "gestor_cliente\0";
-char* first_pipe;
-
 void crear_pipe(const char* pipename) {
-  // printf("Creando un pipe con nombre \"%s\"\n", pipename);
   unlink(pipename);
   bool creado = false;
   mode_t fifo_mode = S_IRUSR | S_IWUSR;
@@ -36,9 +21,8 @@ void crear_pipe(const char* pipename) {
       printf("Intentando de nuevo en %d segundos\n", SLEEP_TIME);
       sleep(SLEEP_TIME);
     } else  creado = true;
-    // printf("Pipe con nombre \"%s\" creado\n", pipename);
 }
-void load_file(const char* filename, int N, bool** g) { // Lee el archivo que contiene el grafo de relaciones iniciales
+void load_file(const char* filename, int N, bool** g) {
   int i,j, temp;
   FILE* fp = fopen(filename, "r");
   if(!fp) {
@@ -55,7 +39,7 @@ void load_file(const char* filename, int N, bool** g) { // Lee el archivo que co
     }
   fclose(fp);
 }
-bool** reservar_matriz_booleanos(int rows, int columns) { // Reserva espacio para una matriz de booleanos de rows * columns
+bool** reservar_matriz_booleanos(int rows, int columns) {
   int i;
   bool** mat = malloc(rows * sizeof(bool*));;
   if(!mat) {
@@ -171,68 +155,58 @@ void follow(int fd) {
   }
   send_follow_confirmation(follow_action(--u, --v));
 }
-void send_tweet1(pid_t cliente_pid, int from, char* t) {
-  int fd, len = strlen(t), tipo = 1;
+void send_tweet(pid_t cliente_pid, int from, tweet* t) {
+  int fd;
   kill(cliente_pid, SIGUSR1);
   if((fd = open(PIPE_ESCRITURA, O_WRONLY)) == -1) {
-    perror("");
+    perror("Error abriendo el pipe");
     exit(1);
   }
   if(write(fd, &from, sizeof(int)) == -1) {
-    perror("");
+    perror("Error escribiendo en el pipe");
     exit(1);
   }
-  if(write(fd, t, 1 + len) == -1) {
-    perror("");
+  if(write(fd, t, sizeof(tweet)) == -1) {
+    perror("Error escribiendo en el pipe");
     exit(1);
   }
   if(close(fd) == -1) {
-    perror("");
+    perror("Error cerrando el pipe");
     exit(1);
-  }
-}
-void tweet1(int fd, int id) {
-  char* t;
-  int i;
-  t = malloc(MAX_TWEET_LENGTH * sizeof(char));
-  if(!t) {
-    perror("");
-    exit(1);
-  }
-  if(read(fd, t, MAX_TWEET_LENGTH) == -1) {
-    perror("");
-    exit(1);
-  }
-  printf("El usuario con id %d envio el tweet \"%s\"\n", id, t);
-  if(asincrono) {
-    printf("Enviandolo a los seguidores de %d\n", id);
-    --id;
-    for(i = 0; i < users; ++i)
-      if(connected[i] && (adj_mat[i][id] || i == id)) {
-        printf("Por ejemplo a %d cuyo pid es %d\n", 1 + i, pid_users[i]);
-        send_tweet1(pid_users[i], id, t);
-      }
   }
 }
 
-void tweet(int fd) {
-  int id, opcion;
+void tweet_handler(int fd) {
+  int id, i;
+  tweet t;
   if(read(fd, &id, sizeof(int)) == -1) {
-    perror("");
+    perror("Error leyendo del pipe");
     exit(1);
   }
-  if(read(fd, &opcion, sizeof(int)) == -1) {
-    perror("");
+  if(read(fd, &t, sizeof(tweet)) == -1) {
+    perror("Error leyendo del pipe");
     exit(1);
   }
-  switch(opcion) {
-    case 1:
-    tweet1(fd, id);
-    break;
-    case 2:
-    break;
-    case 3:
-    break;
+  printf("El usuario %d escribio un tweet de tipo %d\n", id, t.tipo);
+  if(t.tipo == 1)
+    printf("El usuario con id %d escribio el tweet \"%s\"\n", id, t.text);
+  else if(t.tipo == 2)
+    printf("El usuario con id %d compartio una imagen, alto:%d, ancho:%d\n", id, t.imagen.alto, t.imagen.ancho);
+  else if(t.tipo == 3) {
+    printf("El usuario con id %d escribio el tweet \"%s\"\n", id, t.text);
+    printf("Tambien compartio una imagen, alto:%d, ancho:%d\n", t.imagen.alto, t.imagen.ancho);
+  }
+  --id;
+  if(asincrono) {
+    printf("Enviandolo a los seguidores de %d\n", 1 + id);
+    for(i = 0; i < users; ++i) {
+      if((adj_mat[i][id] || i == id) && connected[i]) {
+        printf("Como por ejemplo %d con pid %d\n", 1 + i, pid_users[i]);
+        send_tweet(pid_users[i], id, &t);
+      }
+    }
+  } else {
+
   }
 }
 
@@ -262,8 +236,6 @@ void receive_id() {
   send_connection_confirmation(conectar_cliente(id, pid_cliente));
 }
 
-/* Funcion que se ejecuta infinitamente y envia el pid a los clientes
-a traves del pipe pipename */
 void send_pid(char* pipe_nom) {
   int fd, pid = getpid(), len1 = 1 + strlen(PIPE_LECTURA), len2 = 1 + strlen(PIPE_ESCRITURA);
   for(;;) {
@@ -345,7 +317,7 @@ void signal_handler() {
   }
   else if(opcion == TWEET_ID) {
     puts("Opcion de un tweet");
-    tweet(fd);
+    tweet_handler(fd);
   }
   else
     puts("Opcion desconocida");

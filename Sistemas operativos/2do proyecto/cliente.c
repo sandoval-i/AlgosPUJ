@@ -6,30 +6,18 @@
 #include <string.h>
 #include <stdbool.h>
 #include <signal.h>
-#include "util.h"
+#include "cliente.h"
+#include "tweet.h"
 
-#define END_CHAR '$'
-bool conectado;
-char* pipe_escritura;
-char* pipe_lectura;
-
-char* scan_line(int max_len) {
-  char* line;
+void scan_line(char st[], char delim) {
   int i = 0;
   char c;
-  line = malloc(max_len * sizeof(char));
-  if(!line) {
-    perror("Error reservando memoria para el tweet");
-    exit(1);
-  }
   getchar();
-  while((c = getchar()) != END_CHAR)
-    line[i++] = c;
-  line[i] = '\0';
-  return line;
+  while((c = getchar()) != delim)
+    st[i++] = c;
+  st[i] = '\0';
 }
 void crear_pipe(const char* pipename) {
-  // printf("Creando un pipe con nombre \"%s\"\n", pipename);
   unlink(pipename);
   bool creado = false;
   mode_t fifo_mode = S_IRUSR | S_IWUSR;
@@ -39,7 +27,6 @@ void crear_pipe(const char* pipename) {
       printf("Intentando de nuevo en %d segundos\n", SLEEP_TIME);
       sleep(SLEEP_TIME);
     } else  creado = true;
-    // printf("Pipe con nombre \"%s\" creado\n", pipename);
 }
 void print_menu() {
   puts("***MENU***");
@@ -55,7 +42,7 @@ void print_tweet_menu() {
   puts("3.Mensaje de texto plano + imagen pequenia");
 }
 void recover_tweets_option() {}
-bool valid(char* arr) { // checks if given string can be a positive integer
+bool valid(char* arr) {
   int len = strlen(arr), i;
   for(i = 0; i < len; ++i)
     if(arr[i] < '0' || arr[i] > '9')  return false;
@@ -103,52 +90,77 @@ int get_int() {
   puts("Numero invalido, ingrese unicamente enteros positivos");
   return get_int();
 }
-void send_tweet_option1(int id, pid_t gestor_pid) {
-  int fd, tipo = 1, len, w;
-  char* t = malloc(MAX_TWEET_LENGTH * sizeof(char));
+void get_info_option1(tweet* t) {
   printf("Tweet(Ultimo caracter:'%c'):", END_CHAR);
-  t = scan_line(MAX_TWEET_LENGTH);
-  printf("El tweet es \"%s\"\n", t);
-  len = strlen(t);
+  scan_line((*t).text, END_CHAR);
+  (*t).tipo = 1;
+  printf("El tweet es \"%s\"\n", (*t).text);
+}
+void get_info_option2(tweet* t) {
+  bool ok = false;
+  char ruta[RUTA];
+  while(!ok) {
+    printf("Ruta de la imagen:");
+    scan_line(ruta, '\n');
+    if(abrir_imagen(&((*t).imagen), ruta))
+      ok = true;
+  }
+  (*t).tipo = 2;
+}
+void get_info_option3(tweet* t) {
+  get_info_option1(t);
+  get_info_option2(t);
+  (*t).tipo = 3;
+}
+void send_tweet(int id, pid_t gestor_pid, tweet* t) {
+  int fd;
   kill(gestor_pid, SIGUSR1);
   if((fd = open(pipe_escritura, O_WRONLY)) == -1) {
-    perror("");
+    perror("Error abriendo el pipe");
     exit(1);
   }
   if(write(fd, &TWEET_ID, sizeof(int)) == -1) {
-    perror("");
+    perror("Error escribiendo en el pipe");
     exit(1);
   }
   if(write(fd, &id, sizeof(int)) == -1) {
-    perror("");
+    perror("Error escribiendo en el pipe");
     exit(1);
   }
-  if(write(fd, &tipo, sizeof(int)) == -1) {
-    perror("");
-    exit(1);
-  }
-  if(write(fd, t, 1 + len) == -1) {
-    perror("");
+  if(write(fd, t, sizeof(tweet)) == -1) {
+    perror("Error escribiendo en el pipe");
     exit(1);
   }
   if(close(fd) == -1) {
-    perror("");
+    perror("Error cerrando el pipe");
     exit(1);
   }
 }
 void tweet_option(int id, pid_t gestor_pid) {
-  char* tweet;
-  int fd, opcion;
-  ini:
-  print_tweet_menu();
-  opcion = get_int();
-  switch(opcion) {
-    case 1:
-      send_tweet_option1(id, gestor_pid);
-      break;
-    default:
-      puts("Opcion desconocida, intente de nuevo");
-      goto ini;
+  tweet t;
+  int opcion;
+  bool valid = false;
+  while(!valid) {
+    print_tweet_menu();
+    opcion = get_int();
+    valid = true;
+    switch(opcion) {
+      case 1:
+        get_info_option1(&t);
+        send_tweet(id, gestor_pid, &t);
+        break;
+      case 2:
+        get_info_option2(&t);
+        send_tweet(id, gestor_pid, &t);
+        break;
+      case 3:
+        get_info_option3(&t);
+        send_tweet(id, gestor_pid, &t);
+        break;
+      default:
+        puts("Opcion desconocida, intente de nuevo");
+        valid = false;
+    }
   }
 }
 void follow_option(int id, pid_t gestor_pid) {
@@ -210,9 +222,6 @@ void unfollow_option(int id, pid_t gestor_pid) {
   else
     puts("No se seguia al usuario o el id es invalido");
 }
-/* Funcion que recibe confirmacion de si el cliente con id ya se encuentra registrado
-en el gestor */
-/* Funcion que envia el id, pid al gestor */
 bool send_id(int id) {
   int fd, mipid = getpid();
   puts(SEPARADOR);
@@ -236,8 +245,6 @@ bool send_id(int id) {
   puts("Id, pid enviado");
   return receive_connection_confirmation();
 }
-
-/* Funcion que recibe el pid del gestor */
 bool receive_pid(int id, pid_t* gestor_pid, char* pipe_nom) {
   int fd, l1, l2;
   puts(SEPARADOR);
@@ -255,9 +262,9 @@ bool receive_pid(int id, pid_t* gestor_pid, char* pipe_nom) {
     perror("Error leyendo del pipe");
     exit(1);
   }
-  pipe_escritura = malloc(l1);
+  pipe_escritura = malloc(l1 * sizeof(char));
   if(!pipe_escritura) {
-    perror("");
+    perror("Error reservando memoria para la cadena del pipe:");
     exit(1);
   }
   if(read(fd, pipe_escritura, l1) == -1) {
@@ -268,9 +275,9 @@ bool receive_pid(int id, pid_t* gestor_pid, char* pipe_nom) {
     perror("Error leyendo del pipe");
     exit(1);
   }
-  pipe_lectura = malloc(l2);
+  pipe_lectura = malloc(l2 * sizeof(char));
   if(!pipe_lectura) {
-    perror("");
+    perror("Error reservando memoria para la cadena del pipe:");
     exit(1);
   }
   if(read(fd, pipe_lectura, l2) == -1) {
@@ -286,11 +293,10 @@ bool receive_pid(int id, pid_t* gestor_pid, char* pipe_nom) {
   printf("El pipe para leer del gestor es \"%s\"\n", pipe_lectura);
   return send_id(id);
 }
-
 void disconnection_option(int id, pid_t gestor_pid) {
   int fd;
   kill(gestor_pid, SIGUSR1);
-  while((fd = open(pipe_escritura, O_WRONLY)) == -1) {
+  if((fd = open(pipe_escritura, O_WRONLY)) == -1) {
     perror("Error abriendo el pipe");
     exit(1);
   }
@@ -308,31 +314,35 @@ void disconnection_option(int id, pid_t gestor_pid) {
   }
   exit(1);
 }
-
 void receive_tweets() {
   int fd, from;
-  char* t = malloc(MAX_TWEET_LENGTH * sizeof(char));
-  if(!t) {
-    perror("");
-    exit(1);
-  }
+  tweet t;
   while((fd = open(pipe_lectura, O_RDONLY)) == -1) {
-    perror("");
-    exit(1);
+    perror("Error abriendo el pipe");
+    printf("Intentando de nuevo en %d segundos\n", SLEEP_TIME);
+    sleep(SLEEP_TIME);
   }
   if(read(fd, &from, sizeof(int)) == -1) {
-    perror("");
+    perror("Error leyendo del pipe");
     exit(1);
   }
-  if(read(fd, t, MAX_TWEET_LENGTH) == -1) {
-    perror("");
+  if(read(fd, &t, sizeof(tweet)) == -1) {
+    perror("Error leyendo del pipe");
     exit(1);
   }
   if(close(fd) == -1) {
-    perror("");
+    perror("Error cerrando el pipe");
     exit(1);
   }
-  printf("El usuario con id %d escribio el tweet \"%s\"\n", 1 + from, t);
+  printf("El usuario %d escribio un tweet de tipo %d\n", 1 + from, t.tipo);
+  if(t.tipo == 1)
+    printf("El usuario con id %d escribio el tweet \"%s\"\n", 1 + from, t.text);
+  else if(t.tipo == 2)
+    printf("El usuario con id %d compartio una imagen, alto:%d, ancho:%d\n", 1 + from, t.imagen.alto, t.imagen.ancho);
+  else if(t.tipo == 3) {
+    printf("El usuario con id %d escribio el tweet \"%s\"\n", 1 + from, t.text);
+    printf("Tambien compartio una imagen, alto:%d, ancho:%d\n", t.imagen.alto, t.imagen.ancho);
+  }
 }
 
 int main(int argc, char* argv[]) {
