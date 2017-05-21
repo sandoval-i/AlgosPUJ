@@ -8,9 +8,6 @@
 #include <signal.h>
 #include "gestor.h"
 
-/*
-   TODO: Recuperar tweets
-*/
 void crear_pipe(const char* pipename) {
   unlink(pipename);
   bool creado = false;
@@ -79,6 +76,7 @@ bool conectar_cliente(int id, pid_t pid) {
   if(valid(--id)) {
     conectado = connected[id];
     connected[id] = true;
+    arrival_time[id] = pointer;
     pid_users[id] = pid;
   }
   return conectado;
@@ -155,15 +153,11 @@ void follow(int fd) {
   }
   send_follow_confirmation(follow_action(--u, --v));
 }
-void send_tweet(pid_t cliente_pid, int from, tweet* t) {
+void send_tweet(pid_t cliente_pid, tweet* t) {
   int fd;
   kill(cliente_pid, SIGUSR1);
   if((fd = open(PIPE_ESCRITURA, O_WRONLY)) == -1) {
     perror("Error abriendo el pipe");
-    exit(1);
-  }
-  if(write(fd, &from, sizeof(int)) == -1) {
-    perror("Error escribiendo en el pipe");
     exit(1);
   }
   if(write(fd, t, sizeof(tweet)) == -1) {
@@ -175,41 +169,77 @@ void send_tweet(pid_t cliente_pid, int from, tweet* t) {
     exit(1);
   }
 }
-
 void tweet_handler(int fd) {
   int id, i;
   tweet t;
-  if(read(fd, &id, sizeof(int)) == -1) {
-    perror("Error leyendo del pipe");
-    exit(1);
-  }
   if(read(fd, &t, sizeof(tweet)) == -1) {
     perror("Error leyendo del pipe");
     exit(1);
   }
-  printf("El usuario %d escribio un tweet de tipo %d\n", id, t.tipo);
-  if(t.tipo == 1)
-    printf("El usuario con id %d escribio el tweet \"%s\"\n", id, t.text);
-  else if(t.tipo == 2)
-    printf("El usuario con id %d compartio una imagen, alto:%d, ancho:%d\n", id, t.imagen.alto, t.imagen.ancho);
-  else if(t.tipo == 3) {
-    printf("El usuario con id %d escribio el tweet \"%s\"\n", id, t.text);
-    printf("Tambien compartio una imagen, alto:%d, ancho:%d\n", t.imagen.alto, t.imagen.ancho);
-  }
-  --id;
+  print_tweet(t);
+  id = t.from - 1;
+  send_tweet(pid_users[id], &t);
   if(asincrono) {
     printf("Enviandolo a los seguidores de %d\n", 1 + id);
     for(i = 0; i < users; ++i) {
-      if((adj_mat[i][id] || i == id) && connected[i]) {
+      if(adj_mat[i][id] && i != id && connected[i]) {
         printf("Como por ejemplo %d con pid %d\n", 1 + i, pid_users[i]);
-        send_tweet(pid_users[i], id, &t);
+        send_tweet(pid_users[i], &t);
       }
     }
-  } else {
-
+  }
+  tweets[pointer++] = t;
+}
+void print_tweet(tweet t) {
+  puts(SEPARADOR);
+  printf("El usuario %d escribio un tweet de tipo %d\n", t.from, t.tipo);
+  if(t.tipo == 1)
+    printf("El usuario con id %d escribio el tweet \"%s\"\n", t.from, t.text);
+  else if(t.tipo == 2)
+    printf("El usuario con id %d compartio una imagen, alto:%d, ancho:%d\n", t.from, t.imagen.alto, t.imagen.ancho);
+  else if(t.tipo == 3) {
+    printf("El usuario con id %d escribio el tweet \"%s\"\n", t.from, t.text);
+    printf("Tambien compartio una imagen, alto:%d, ancho:%d\n", t.imagen.alto, t.imagen.ancho);
   }
 }
-
+void send_recovered_tweets(int cuantos, int u, int beg) {
+  int fd, i;
+  kill(pid_users[u], SIGUSR2);
+  if((fd = open(PIPE_ESCRITURA, O_WRONLY)) == -1) {
+    perror("Error abriendo el pipe");
+    exit(1);
+  }
+  if(write(fd, &cuantos, sizeof(int)) == -1) {
+    perror("Error escribiendo en el pipe");
+    exit(1);
+  }
+  for(i = beg; i < pointer; ++i)
+    if(adj_mat[u][tweets[i].from - 1]) {
+      printf("Se recupero un tweet:");
+      print_tweet(tweets[i]);
+      if(write(fd, &tweets[i], sizeof(tweet)) == -1) {
+        perror("Error escribiendo en el pipe");
+        exit(1);
+      }
+    }
+}
+void recover_tweets_from_begin(int id) {
+  int u = id, cuantos = 0;
+  for(int i = 0; i < pointer; ++i)
+    cuantos += adj_mat[u][tweets[i].from - 1];
+  send_recovered_tweets(cuantos, u, 0);
+}
+void recover_tweets_handler(int fd) {
+  int u,v,cuantos = 0;
+  if(read(fd, &u, sizeof(int)) == -1) {
+    perror("Error leyendo del pipe");
+    exit(1);
+  }
+  --u;
+  for(int i = arrival_time[u]; i < pointer; ++i)
+    cuantos += adj_mat[u][tweets[i].from - 1];
+  send_recovered_tweets(cuantos, u, arrival_time[u]);
+}
 void receive_id() {
   int id, fd;
   pid_t pid_cliente;
@@ -233,9 +263,13 @@ void receive_id() {
     exit(1);
   }
   printf("El cliente con id %d y pid %d se quiere registrar\n", id, pid_cliente);
-  send_connection_confirmation(conectar_cliente(id, pid_cliente));
+  if(conectar_cliente(id, pid_cliente))
+    send_connection_confirmation(true);
+  else {
+    send_connection_confirmation(false);
+    recover_tweets_from_begin(--id);
+  }
 }
-
 void send_pid(char* pipe_nom) {
   int fd, pid = getpid(), len1 = 1 + strlen(PIPE_LECTURA), len2 = 1 + strlen(PIPE_ESCRITURA);
   for(;;) {
@@ -273,7 +307,6 @@ void send_pid(char* pipe_nom) {
     receive_id();
   }
 }
-
 void end() {
   unlink(PIPE_LECTURA);
   unlink(PIPE_ESCRITURA);
@@ -296,7 +329,8 @@ void signal_handler() {
   puts("Leyendo del pipe, pues alguien envio una senal");
   while((fd = open(PIPE_LECTURA, O_RDONLY)) == -1) {
     perror("Error abriendo el pipe");
-    exit(1);
+    printf("Intentando de nuevo en %d segundos\n", SLEEP_TIME);
+    sleep(SLEEP_TIME);
   }
   if(read(fd, &opcion, sizeof(int)) == -1) {
     perror("Error leyendo del pipe");
@@ -318,6 +352,10 @@ void signal_handler() {
   else if(opcion == TWEET_ID) {
     puts("Opcion de un tweet");
     tweet_handler(fd);
+  }
+  else if(opcion == RECOVER_ID) {
+    puts("Opcion de recuperar tweets");
+    recover_tweets_handler(fd);
   }
   else
     puts("Opcion desconocida");
@@ -349,7 +387,7 @@ int main(int argc, char* argv[]) {
   crear_pipe(PIPE_LECTURA);
   crear_pipe(PIPE_ESCRITURA);
   crear_pipe(argv[4]);
-
+  pointer = 0; // No hay ningun tweet aun
   // Hasta aqui va la configuracion inicial de gestor
   puts("El gestor se ha configurado correctamente");
   send_pid(first_pipe);

@@ -6,11 +6,13 @@
 bool asincrono;
 bool* connected;
 bool** adj_mat;
-int users;
+int users, pointer;
 pid_t* pid_users;
 const char* PIPE_LECTURA = "cliente_gestor\0";
 const char* PIPE_ESCRITURA = "gestor_cliente\0";
 char* first_pipe;
+int arrival_time[MAX_USERS];
+tweet tweets[MAX_TWEETS];
 
 void crear_pipe(const char*);
 void load_file(const char*, int, bool**);
@@ -26,7 +28,7 @@ bool follow_action(int, int);
 bool unfollow_action(int, int );
 void unfollow(int);
 void follow(int);
-void send_tweet(pid_t, int, tweet*);
+void send_tweet(pid_t, tweet*);
 void tweet_handler(int);
 void receive_id();
 void send_pid(char*);
