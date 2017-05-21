@@ -8,7 +8,12 @@
 #include <signal.h>
 #include "util.h"
 
+/* TODO: Tweet
+   TODO: Recuperar tweets
+*/
+
 bool* connected;
+bool** adj_mat;
 char* pipe_escritura;
 int users;
 pid_t* pid_users;
@@ -27,7 +32,7 @@ void crear_pipe(const char* pipename) {
     } else  creado = true;
     // printf("Pipe con nombre \"%s\" creado\n", pipename);
 }
-void load_file(const char* filename, int N, bool** adjMat) { // Lee el archivo que contiene el grafo de relaciones iniciales
+void load_file(const char* filename, int N, bool** g) { // Lee el archivo que contiene el grafo de relaciones iniciales
   int i,j, temp;
   FILE* fp = fopen(filename, "r");
   if(!fp) {
@@ -40,7 +45,7 @@ void load_file(const char* filename, int N, bool** adjMat) { // Lee el archivo q
         perror("Error leyendo el archivo de relaciones");
         exit(1);
       }
-      adjMat[i][j] = (temp == 1);
+      g[i][j] = (temp == 1);
     }
   fclose(fp);
 }
@@ -76,17 +81,19 @@ pid_t* reservar_arreglo_pid(int rows) {
   }
   return arr;
 }
+bool valid(int id) {
+  return id >= 0 && id < users;
+}
 bool conectar_cliente(int id, pid_t pid) {
   bool conectado = true;
-  if(--id >= 0 && id < users) {
+  if(valid(--id)) {
     conectado = connected[id];
     connected[id] = true;
     pid_users[id] = pid;
   }
   return conectado;
 }
-
-void send_confirmation(bool answer) {
+void send_connection_confirmation(bool answer) {
   int fd;
   puts(SEPARADOR);
   puts("Enviando la respuesta al cliente");
@@ -103,6 +110,60 @@ void send_confirmation(bool answer) {
     exit(1);
   }
   puts("Sent!");
+}
+void send_follow_confirmation(bool answer) {
+  send_connection_confirmation(answer);
+}
+void send_unfollow_confirmation(bool answer) {
+  return send_connection_confirmation(answer);
+}
+bool follow_action(int u, int v) {
+  bool ok = false;
+  if(valid(v)) {
+    ok = !adj_mat[u][v];
+    adj_mat[u][v] = true;
+  }
+  if(ok)
+    printf("Ahora el usuario %d sigue al usuario %d\n", 1 + u, 1 + v);
+  else
+    printf("La solicitud realizada por el usuario %d es invalida\n", 1 + u);
+  return ok;
+}
+bool unfollow_action(int u, int v) {
+  bool ok;
+  if(valid(v)) {
+    ok = adj_mat[u][v];
+    adj_mat[u][v] = false;
+  }
+  if(ok)
+    printf("El usuario %d deja de seguir al usuario %d\n", 1 + u, 1 + v);
+  else
+    printf("La solicitud realizada por el usuario %d es invalida\n", 1 + u);
+  return ok;
+}
+void unfollow(int fd) {
+  int u, v;
+  if(read(fd, &u, sizeof(int)) == -1) {
+    perror("Error leyendo del pipe");
+    exit(1);
+  }
+  if(read(fd, &v, sizeof(int)) == -1) {
+    perror("Error leyendo del pipe");
+    exit(1);
+  }
+  send_unfollow_confirmation(unfollow_action(--u, --v));
+}
+void follow(int fd) {
+  int u, v;
+  if(read(fd, &u, sizeof(int)) == -1) {
+    perror("Error leyendo del pipe");
+    exit(1);
+  }
+  if(read(fd, &v, sizeof(int)) == -1) {
+    perror("Error leyendo del pipe");
+    exit(1);
+  }
+  send_follow_confirmation(follow_action(--u, --v));
 }
 
 void receive_id() {
@@ -128,7 +189,7 @@ void receive_id() {
     exit(1);
   }
   printf("El cliente con id %d y pid %d se quiere registrar\n", id, pid_cliente);
-  send_confirmation(conectar_cliente(id, pid_cliente));
+  send_connection_confirmation(conectar_cliente(id, pid_cliente));
 }
 
 /* Funcion que se ejecuta infinitamente y envia el pid a los clientes
@@ -158,14 +219,12 @@ void send_pid() {
     receive_id();
   }
 }
-
 void end() {
   unlink(PIPE_LECTURA);
   unlink(pipe_escritura);
   puts("");
   exit(1);
 }
-
 void desconectar_cliente(int fd) {
   int id;
   if(read(fd, &id, sizeof(int)) == -1) {
@@ -175,16 +234,14 @@ void desconectar_cliente(int fd) {
   connected[--id] = false;
   printf("El cliente con id %d fue desconectado\n", 1 + id);
 }
-
 void signal_handler() {
   int fd, opcion;
   puts(SEPARADOR);
-  puts("Leyendo del pipe");
+  puts("Leyendo del pipe, pues alguien envio una senal");
   while((fd = open(PIPE_LECTURA, O_RDONLY)) == -1) {
     perror("Error abriendo el pipe");
     exit(1);
   }
-  puts("OPEN!");
   if(read(fd, &opcion, sizeof(int)) == -1) {
     perror("Error leyendo del pipe");
     exit(1);
@@ -193,6 +250,14 @@ void signal_handler() {
   if(opcion == DESCONEXION_ID) {
     puts("Opcion de desconexion");
     desconectar_cliente(fd);
+  }
+  else if(opcion == FOLLOW_ID) {
+    puts("Opcion de follow");
+    follow(fd);
+  }
+  else if(opcion == UNFOLLOW_ID) {
+    puts("Opcion de unfollow");
+    unfollow(fd);
   }
   else
     puts("Opcion desconocida");
@@ -212,7 +277,7 @@ int main(int argc, char* argv[]) {
   const char* filename = strdup(argv[2]);
   users = atoi(argv[1]);
   pipe_escritura = strdup(argv[4]);
-  bool** adjMat = reservar_matriz_booleanos(users, users);
+  adj_mat = reservar_matriz_booleanos(users, users);
   connected = reservar_arreglo_booleanos(users);
   pid_users = reservar_arreglo_pid(users);
   pid_t pid = getpid();
@@ -221,7 +286,7 @@ int main(int argc, char* argv[]) {
   memset(connected, false, sizeof connected);
 
   signal(SIGUSR1, signal_handler);
-  load_file(filename, users, adjMat);
+  load_file(filename, users, adj_mat);
   crear_pipe(PIPE_LECTURA);
   crear_pipe(pipe_escritura);
 

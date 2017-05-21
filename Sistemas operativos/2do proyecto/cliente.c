@@ -33,22 +33,15 @@ void print_menu() {
   puts("4.Recuperar tweets");
   puts("5.Desconexion");
 }
-void follow_option() {
-  int id;
-  printf("Identificador del usuario al que desea seguir:");
-  scanf("%d", &id);
-}
-void unfollow_option() {
-  int id;
-  printf("Identificador del usuario al que desea dejar de seguir:");
-  scanf("%d", &id);
-}
 void tweet_option() {}
 void recover_tweets_option() {}
-
-/* Funcion que recibe confirmacion de si el cliente con id ya se encuentra registrado
-en el gestor */
-bool receive_confirmation() {
+bool valid(char* arr) { // checks if given string can be a positive integer
+  int len = strlen(arr), i;
+  for(i = 0; i < len; ++i)
+    if(arr[i] < '0' || arr[i] > '9')  return false;
+  return true;
+}
+bool receive_connection_confirmation() {
   int fd;
   bool answer;
   puts(SEPARADOR);
@@ -69,7 +62,88 @@ bool receive_confirmation() {
   printf("Confirmacion recibida: %d\n", answer);
   return answer;
 }
-
+bool receive_follow_confirmation() {
+  return receive_connection_confirmation();
+}
+bool receive_unfollow_confirmation() {
+  return receive_connection_confirmation();
+}
+int get_int() {
+  char* buff = malloc(MAX_INPUT_CHAR * sizeof(char));
+  int ans;
+  if(!buff) {
+    perror("Error reservando memoria para la cadena de entrada");
+    exit(1);
+  }
+  scanf("%s", buff);
+  if(valid(buff)) {
+    sscanf(buff, "%d", &ans);
+    return ans;
+  }
+  puts("Numero invalido, ingrese unicamente enteros positivos");
+  return get_int();
+}
+void follow_option(int id, pid_t gestor_pid) {
+  int follow, fd;
+  printf("Identificador del usuario al que desea seguir:");
+  follow = get_int();
+  kill(gestor_pid, SIGUSR1);
+  if((fd = open(pipe_escritura, O_WRONLY)) == -1) {
+    perror("Error abriendo el pipe");
+    exit(1);
+  }
+  if(write(fd, &FOLLOW_ID, sizeof(int)) == -1) {
+    perror("Error escribiendo en el pipe");
+    exit(1);
+  }
+  if(write(fd, &id, sizeof(int)) == -1) {
+    perror("Error escribiendo en el pipe");
+    exit(1);
+  }
+  if(write(fd, &follow, sizeof(int)) == -1) {
+    perror("Error escribiendo en el pipe");
+    exit(1);
+  }
+  if(close(fd) == -1) {
+    puts("Error cerrando el pipe");
+    exit(1);
+  }
+  if(receive_follow_confirmation())
+    printf("Ahora se sigue al usuario con id %d\n", follow);
+  else  puts("Ya se sigue al usuario o el id es invalido\n");
+}
+void unfollow_option(int id, pid_t gestor_pid) {
+  int fd, unfollow;
+  printf("Identificador del usuario al que desea dejar de seguir:");
+  unfollow = get_int();
+  kill(gestor_pid, SIGUSR1);
+  if((fd = open(pipe_escritura, O_WRONLY)) == -1) {
+    perror("Error abriendo el pipe");
+    exit(1);
+  }
+  if(write(fd, &UNFOLLOW_ID, sizeof(int)) == -1) {
+    perror("Error escribiendo en el pipe");
+    exit(1);
+  }
+  if(write(fd, &id, sizeof(int)) == -1) {
+    perror("Error escribiendo en el pipe");
+    exit(1);
+  }
+  if(write(fd, &unfollow, sizeof(int)) == -1) {
+    perror("Error escribiendo en el pipe");
+    exit(1);
+  }
+  if(close(fd) == -1) {
+    perror("Error cerrando el pipe");
+    exit(1);
+  }
+  if(receive_unfollow_confirmation())
+    printf("Ya no se sigue al usuario %d\n", unfollow);
+  else
+    puts("No se seguia al usuario o el id es invalido");
+}
+/* Funcion que recibe confirmacion de si el cliente con id ya se encuentra registrado
+en el gestor */
 /* Funcion que envia el id, pid al gestor */
 bool send_id(int id) {
   int fd, mipid = getpid();
@@ -92,7 +166,7 @@ bool send_id(int id) {
     exit(1);
   }
   puts("Id, pid enviado");
-  return receive_confirmation();
+  return receive_connection_confirmation();
 }
 
 /* Funcion que recibe el pid del gestor */
@@ -168,13 +242,13 @@ int main(int argc, char* argv[]) {
   puts("Cliente iniciado");
   for(;;) {
     print_menu();
-    scanf("%d", &opcion);
+    opcion = get_int();
     switch(opcion) {
       case 1:
-        follow_option();
+        follow_option(id, *gestor_pid);
         break;
       case 2:
-        unfollow_option();
+        unfollow_option(id, *gestor_pid);
         break;
       case 3:
         tweet_option();
