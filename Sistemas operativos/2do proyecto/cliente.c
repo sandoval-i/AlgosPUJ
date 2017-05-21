@@ -8,10 +8,26 @@
 #include <signal.h>
 #include "util.h"
 
+#define END_CHAR '$'
 bool conectado;
 char* pipe_escritura;
 char* pipe_lectura;
 
+char* scan_line(int max_len) {
+  char* line;
+  int i = 0;
+  char c;
+  line = malloc(max_len * sizeof(char));
+  if(!line) {
+    perror("Error reservando memoria para el tweet");
+    exit(1);
+  }
+  getchar();
+  while((c = getchar()) != END_CHAR)
+    line[i++] = c;
+  line[i] = '\0';
+  return line;
+}
 void crear_pipe(const char* pipename) {
   // printf("Creando un pipe con nombre \"%s\"\n", pipename);
   unlink(pipename);
@@ -33,7 +49,11 @@ void print_menu() {
   puts("4.Recuperar tweets");
   puts("5.Desconexion");
 }
-void tweet_option() {}
+void print_tweet_menu() {
+  printf("1.Mensaje de texto plano(Max longitud:%d)\n", MAX_TWEET_LENGTH - 1);
+  puts("2.Imagen pequenia");
+  puts("3.Mensaje de texto plano + imagen pequenia");
+}
 void recover_tweets_option() {}
 bool valid(char* arr) { // checks if given string can be a positive integer
   int len = strlen(arr), i;
@@ -45,7 +65,7 @@ bool receive_connection_confirmation() {
   int fd;
   bool answer;
   puts(SEPARADOR);
-  puts("Abriendo el pipe para recibir la confirmacion");
+  printf("Abriendo el pipe(\"%s\") para recibir la confirmacion\n", pipe_lectura);
   while((fd = open(pipe_lectura, O_RDONLY)) == -1) {
     perror("Error abriendo el pipe");
     printf("Intentando de nuevo en %d segundos\n", SLEEP_TIME);
@@ -82,6 +102,54 @@ int get_int() {
   }
   puts("Numero invalido, ingrese unicamente enteros positivos");
   return get_int();
+}
+void send_tweet_option1(int id, pid_t gestor_pid) {
+  int fd, tipo = 1, len, w;
+  char* t = malloc(MAX_TWEET_LENGTH * sizeof(char));
+  printf("Tweet(Ultimo caracter:'%c'):", END_CHAR);
+  t = scan_line(MAX_TWEET_LENGTH);
+  printf("El tweet es \"%s\"\n", t);
+  len = strlen(t);
+  kill(gestor_pid, SIGUSR1);
+  if((fd = open(pipe_escritura, O_WRONLY)) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(write(fd, &TWEET_ID, sizeof(int)) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(write(fd, &id, sizeof(int)) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(write(fd, &tipo, sizeof(int)) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(write(fd, t, 1 + len) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(close(fd) == -1) {
+    perror("");
+    exit(1);
+  }
+}
+void tweet_option(int id, pid_t gestor_pid) {
+  char* tweet;
+  int fd, opcion;
+  ini:
+  print_tweet_menu();
+  opcion = get_int();
+  switch(opcion) {
+    case 1:
+      send_tweet_option1(id, gestor_pid);
+      break;
+    default:
+      puts("Opcion desconocida, intente de nuevo");
+      goto ini;
+  }
 }
 void follow_option(int id, pid_t gestor_pid) {
   int follow, fd;
@@ -170,11 +238,11 @@ bool send_id(int id) {
 }
 
 /* Funcion que recibe el pid del gestor */
-bool receive_pid(int id, pid_t* gestor_pid) {
-  int fd;
+bool receive_pid(int id, pid_t* gestor_pid, char* pipe_nom) {
+  int fd, l1, l2;
   puts(SEPARADOR);
   puts("Obteniendo el pid del gestor");
-  while((fd = open(pipe_lectura, O_RDONLY)) == -1) {
+  while((fd = open(pipe_nom, O_RDONLY)) == -1) {
     perror("Error abriendo el pipe");
     printf("Intentando de nuevo en %d segundos\n", SLEEP_TIME);
     sleep(SLEEP_TIME);
@@ -183,7 +251,29 @@ bool receive_pid(int id, pid_t* gestor_pid) {
     perror("Error leyendo del pipe");
     exit(1);
   }
-  if(read(fd, pipe_escritura, MAX_PIPE_LENGTH) == -1) {
+  if(read(fd, &l1, sizeof(int)) == -1) {
+    perror("Error leyendo del pipe");
+    exit(1);
+  }
+  pipe_escritura = malloc(l1);
+  if(!pipe_escritura) {
+    perror("");
+    exit(1);
+  }
+  if(read(fd, pipe_escritura, l1) == -1) {
+    perror("Error leyendo del pipe");
+    exit(1);
+  }
+  if(read(fd, &l2, sizeof(int)) == -1) {
+    perror("Error leyendo del pipe");
+    exit(1);
+  }
+  pipe_lectura = malloc(l2);
+  if(!pipe_lectura) {
+    perror("");
+    exit(1);
+  }
+  if(read(fd, pipe_lectura, l2) == -1) {
     perror("Error leyendo del pipe");
     exit(1);
   }
@@ -191,7 +281,9 @@ bool receive_pid(int id, pid_t* gestor_pid) {
     perror("Error cerrando el pipe");
     exit(1);
   }
-  printf("Recibido, el pid del gestor: %d y el pipe para hablar con el gestor es \"%s\"\n", *gestor_pid, pipe_escritura);
+  printf("Recibido, el pid del gestor: %d\n", *gestor_pid);
+  printf("El pipe para escribir al gestor es \"%s\"\n", pipe_escritura);
+  printf("El pipe para leer del gestor es \"%s\"\n", pipe_lectura);
   return send_id(id);
 }
 
@@ -217,25 +309,46 @@ void disconnection_option(int id, pid_t gestor_pid) {
   exit(1);
 }
 
+void receive_tweets() {
+  int fd, from;
+  char* t = malloc(MAX_TWEET_LENGTH * sizeof(char));
+  if(!t) {
+    perror("");
+    exit(1);
+  }
+  while((fd = open(pipe_lectura, O_RDONLY)) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(read(fd, &from, sizeof(int)) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(read(fd, t, MAX_TWEET_LENGTH) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(close(fd) == -1) {
+    perror("");
+    exit(1);
+  }
+  printf("El usuario con id %d escribio el tweet \"%s\"\n", 1 + from, t);
+}
+
 int main(int argc, char* argv[]) {
   if(argc != 3) {
     printf("Error, usage: %s ID pipeNom\n", argv[0]);
     exit(1);
   }
   int id = atoi(argv[1]), opcion;
-  pipe_lectura = strdup(argv[2]);
   pid_t* gestor_pid = malloc(sizeof(pid_t));
-  pipe_escritura = malloc(MAX_PIPE_LENGTH * sizeof(char));
-  if(!pipe_escritura) {
-    perror("Error reservando memoria a la cadena de caracteres del pipe");
-    exit(1);
-  }
   if(!gestor_pid) {
     perror("Error reservando memoria al pid del gestor");
     exit(1);
   }
+  signal(SIGUSR1, receive_tweets);
   printf("Iniciando el cliente, mi pid es: %d\n", getpid());
-  if(receive_pid(id, gestor_pid)) {
+  if(receive_pid(id, gestor_pid, argv[2])) {
     printf("El usuario con id %d ya se encuentra registrado o es invalido\n", id);
     exit(1);
   }
@@ -251,7 +364,7 @@ int main(int argc, char* argv[]) {
         unfollow_option(id, *gestor_pid);
         break;
       case 3:
-        tweet_option();
+        tweet_option(id, *gestor_pid);
         break;
       case 4:
         recover_tweets_option();

@@ -12,12 +12,18 @@
    TODO: Recuperar tweets
 */
 
+/*struct tweet {
+  char* text;
+}*/
+
+bool asincrono;
 bool* connected;
 bool** adj_mat;
-char* pipe_escritura;
 int users;
 pid_t* pid_users;
-const char* PIPE_LECTURA = "registro\0";
+const char* PIPE_LECTURA = "cliente_gestor\0";
+const char* PIPE_ESCRITURA = "gestor_cliente\0";
+char* first_pipe;
 
 void crear_pipe(const char* pipename) {
   // printf("Creando un pipe con nombre \"%s\"\n", pipename);
@@ -97,7 +103,7 @@ void send_connection_confirmation(bool answer) {
   int fd;
   puts(SEPARADOR);
   puts("Enviando la respuesta al cliente");
-  if((fd = open(pipe_escritura, O_WRONLY)) == -1) {
+  if((fd = open(PIPE_ESCRITURA, O_WRONLY)) == -1) {
     perror("Error abriendo el pipe");
     exit(1);
   }
@@ -165,6 +171,70 @@ void follow(int fd) {
   }
   send_follow_confirmation(follow_action(--u, --v));
 }
+void send_tweet1(pid_t cliente_pid, int from, char* t) {
+  int fd, len = strlen(t), tipo = 1;
+  kill(cliente_pid, SIGUSR1);
+  if((fd = open(PIPE_ESCRITURA, O_WRONLY)) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(write(fd, &from, sizeof(int)) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(write(fd, t, 1 + len) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(close(fd) == -1) {
+    perror("");
+    exit(1);
+  }
+}
+void tweet1(int fd, int id) {
+  char* t;
+  int i;
+  t = malloc(MAX_TWEET_LENGTH * sizeof(char));
+  if(!t) {
+    perror("");
+    exit(1);
+  }
+  if(read(fd, t, MAX_TWEET_LENGTH) == -1) {
+    perror("");
+    exit(1);
+  }
+  printf("El usuario con id %d envio el tweet \"%s\"\n", id, t);
+  if(asincrono) {
+    printf("Enviandolo a los seguidores de %d\n", id);
+    --id;
+    for(i = 0; i < users; ++i)
+      if(connected[i] && (adj_mat[i][id] || i == id)) {
+        printf("Por ejemplo a %d cuyo pid es %d\n", 1 + i, pid_users[i]);
+        send_tweet1(pid_users[i], id, t);
+      }
+  }
+}
+
+void tweet(int fd) {
+  int id, opcion;
+  if(read(fd, &id, sizeof(int)) == -1) {
+    perror("");
+    exit(1);
+  }
+  if(read(fd, &opcion, sizeof(int)) == -1) {
+    perror("");
+    exit(1);
+  }
+  switch(opcion) {
+    case 1:
+    tweet1(fd, id);
+    break;
+    case 2:
+    break;
+    case 3:
+    break;
+  }
+}
 
 void receive_id() {
   int id, fd;
@@ -194,12 +264,12 @@ void receive_id() {
 
 /* Funcion que se ejecuta infinitamente y envia el pid a los clientes
 a traves del pipe pipename */
-void send_pid() {
-  int fd, pid = getpid(), i = 0;
+void send_pid(char* pipe_nom) {
+  int fd, pid = getpid(), len1 = 1 + strlen(PIPE_LECTURA), len2 = 1 + strlen(PIPE_ESCRITURA);
   for(;;) {
     puts(SEPARADOR);
     puts("Enviando mi pid");
-    if((fd = open(pipe_escritura, O_WRONLY)) == -1) {
+    if((fd = open(pipe_nom, O_WRONLY)) == -1) {
       perror("Error abriendo el pipe");
       exit(1);
     }
@@ -207,7 +277,19 @@ void send_pid() {
       perror("Error escribiendo en el pipe");
       exit(1);
     }
-    if(write(fd, PIPE_LECTURA, sizeof(PIPE_LECTURA)) == -1) {
+    if(write(fd, &len1, sizeof(int)) == -1) {
+      perror("");
+      exit(1);
+    }
+    if(write(fd, PIPE_LECTURA, len1) == -1) {
+      perror("Error escribiendo en el pipe");
+      exit(1);
+    }
+    if(write(fd, &len2, sizeof(int)) == -1) {
+      perror("");
+      exit(1);
+    }
+    if(write(fd, PIPE_ESCRITURA, len2) == -1) {
       perror("Error escribiendo en el pipe");
       exit(1);
     }
@@ -219,9 +301,11 @@ void send_pid() {
     receive_id();
   }
 }
+
 void end() {
   unlink(PIPE_LECTURA);
-  unlink(pipe_escritura);
+  unlink(PIPE_ESCRITURA);
+  unlink(first_pipe);
   puts("");
   exit(1);
 }
@@ -259,6 +343,10 @@ void signal_handler() {
     puts("Opcion de unfollow");
     unfollow(fd);
   }
+  else if(opcion == TWEET_ID) {
+    puts("Opcion de un tweet");
+    tweet(fd);
+  }
   else
     puts("Opcion desconocida");
   if(close(fd) == -1) {
@@ -272,15 +360,14 @@ int main(int argc, char* argv[]) {
     printf("Error, usage: %s N relaciones modo pipeNom\n", argv[0]);
     exit(1);
   }
-
-  int modo = atoi(argv[3]);
   const char* filename = strdup(argv[2]);
   users = atoi(argv[1]);
-  pipe_escritura = strdup(argv[4]);
   adj_mat = reservar_matriz_booleanos(users, users);
   connected = reservar_arreglo_booleanos(users);
   pid_users = reservar_arreglo_pid(users);
   pid_t pid = getpid();
+  asincrono = (atoi(argv[3]) == ASINCRONO);
+  first_pipe = strdup(argv[4]);
   signal(SIGINT, end);
   // Inicialmente no hay ningun cliente conectado
   memset(connected, false, sizeof connected);
@@ -288,10 +375,11 @@ int main(int argc, char* argv[]) {
   signal(SIGUSR1, signal_handler);
   load_file(filename, users, adj_mat);
   crear_pipe(PIPE_LECTURA);
-  crear_pipe(pipe_escritura);
+  crear_pipe(PIPE_ESCRITURA);
+  crear_pipe(argv[4]);
 
   // Hasta aqui va la configuracion inicial de gestor
   puts("El gestor se ha configurado correctamente");
-  send_pid();
+  send_pid(first_pipe);
   return 0;
 }
