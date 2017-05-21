@@ -9,7 +9,8 @@
 #include "util.h"
 
 bool conectado;
-char* pipe;
+char* pipe_escritura;
+char* pipe_lectura;
 
 void crear_pipe(const char* pipename) {
   // printf("Creando un pipe con nombre \"%s\"\n", pipename);
@@ -45,12 +46,14 @@ void unfollow_option() {
 void tweet_option() {}
 void recover_tweets_option() {}
 
-bool receive_confirmation(const char* pipename) {
+/* Funcion que recibe confirmacion de si el cliente con id ya se encuentra registrado
+en el gestor */
+bool receive_confirmation() {
   int fd;
   bool answer;
-  puts(separador);
+  puts(SEPARADOR);
   puts("Abriendo el pipe para recibir la confirmacion");
-  while((fd = open(pipename, O_RDONLY)) == -1) {
+  while((fd = open(pipe_lectura, O_RDONLY)) == -1) {
     perror("Error abriendo el pipe");
     printf("Intentando de nuevo en %d segundos\n", SLEEP_TIME);
     sleep(SLEEP_TIME);
@@ -65,15 +68,14 @@ bool receive_confirmation(const char* pipename) {
   }
   printf("Confirmacion recibida: %d\n", answer);
   return answer;
-
 }
 
-bool send_id(const char* pipename, int id) {
+/* Funcion que envia el id, pid al gestor */
+bool send_id(int id) {
   int fd, mipid = getpid();
-  crear_pipe(pipename);
-  puts(separador);
+  puts(SEPARADOR);
   puts("Abriendo el pipe para enviar mi id, pid");
-  if((fd = open(pipename, O_WRONLY)) == -1) {
+  if((fd = open(pipe_escritura, O_WRONLY)) == -1) {
     perror("Error abriendo el pipe");
     exit(1);
   }
@@ -90,15 +92,15 @@ bool send_id(const char* pipename, int id) {
     exit(1);
   }
   puts("Id, pid enviado");
-  unlink(pipename);
-  return receive_confirmation(pipename);
+  return receive_confirmation();
 }
 
-bool receive_pid(const char* pipename, int id, pid_t* gestor_pid) {
+/* Funcion que recibe el pid del gestor */
+bool receive_pid(int id, pid_t* gestor_pid) {
   int fd;
-  puts(separador);
+  puts(SEPARADOR);
   puts("Obteniendo el pid del gestor");
-  while((fd = open(pipename, O_RDONLY)) == -1) {
+  while((fd = open(pipe_lectura, O_RDONLY)) == -1) {
     perror("Error abriendo el pipe");
     printf("Intentando de nuevo en %d segundos\n", SLEEP_TIME);
     sleep(SLEEP_TIME);
@@ -107,12 +109,38 @@ bool receive_pid(const char* pipename, int id, pid_t* gestor_pid) {
     perror("Error leyendo del pipe");
     exit(1);
   }
+  if(read(fd, pipe_escritura, MAX_PIPE_LENGTH) == -1) {
+    perror("Error leyendo del pipe");
+    exit(1);
+  }
   if(close(fd) == -1) {
     perror("Error cerrando el pipe");
     exit(1);
   }
-  printf("Recibido, el pid del gestor es %d\n", *gestor_pid);
-  return send_id(pipe_registro, id);
+  printf("Recibido, el pid del gestor: %d y el pipe para hablar con el gestor es \"%s\"\n", *gestor_pid, pipe_escritura);
+  return send_id(id);
+}
+
+void disconnection_option(int id, pid_t gestor_pid) {
+  int fd;
+  kill(gestor_pid, SIGUSR1);
+  while((fd = open(pipe_escritura, O_WRONLY)) == -1) {
+    perror("Error abriendo el pipe");
+    exit(1);
+  }
+  if(write(fd, &DESCONEXION_ID, sizeof(int)) == -1) {
+    perror("Error escribiendo al pipe");
+    exit(1);
+  }
+  if(write(fd, &id, sizeof(int)) == -1) {
+    perror("Error escribiendo al pipe");
+    exit(1);
+  }
+  if(close(fd) == -1) {
+    perror("Error cerrando el pipe");
+    exit(1);
+  }
+  exit(1);
 }
 
 int main(int argc, char* argv[]) {
@@ -121,14 +149,19 @@ int main(int argc, char* argv[]) {
     exit(1);
   }
   int id = atoi(argv[1]), opcion;
-  pipe = strdup(argv[2]);
+  pipe_lectura = strdup(argv[2]);
   pid_t* gestor_pid = malloc(sizeof(pid_t));
+  pipe_escritura = malloc(MAX_PIPE_LENGTH * sizeof(char));
+  if(!pipe_escritura) {
+    perror("Error reservando memoria a la cadena de caracteres del pipe");
+    exit(1);
+  }
   if(!gestor_pid) {
     perror("Error reservando memoria al pid del gestor");
     exit(1);
   }
   printf("Iniciando el cliente, mi pid es: %d\n", getpid());
-  if(receive_pid(pipe, id, gestor_pid)) {
+  if(receive_pid(id, gestor_pid)) {
     printf("El usuario con id %d ya se encuentra registrado o es invalido\n", id);
     exit(1);
   }
@@ -150,7 +183,7 @@ int main(int argc, char* argv[]) {
         recover_tweets_option();
         break;
       case 5:
-        // disconnection_option(pipe, id, *gestor_pid);
+        disconnection_option(id, *gestor_pid);
         break;
       default:
         puts("Opcion desconocida, intente de nuevo");
